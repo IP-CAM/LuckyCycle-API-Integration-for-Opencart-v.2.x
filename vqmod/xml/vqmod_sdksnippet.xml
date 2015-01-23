@@ -1,0 +1,223 @@
+<modification>
+    <id>LuckyCycle API Integration</id>
+    <version>1.0</version>
+    <vqmver>2.5.0</vqmver>
+    <author>LUCKYCYCLE API Integration</author>
+	
+	<file name="catalog/controller/common/header.php" error="log">
+		<operation error="log">
+			<search position="before" error="log" index="1"><![CDATA[$data['title'] = $this->document->getTitle();]]></search>
+			<add><![CDATA[
+				if (isset($this->request->get['route'])) {
+					$get_route = $this->request->get['route'];
+					if ($get_route!='checkout/success') {
+						unset($this->session->data['customer_order_id']);
+						unset($this->session->data['final_total']);
+						unset($this->session->data['user_uid']);
+						unset($this->session->data['email']);
+						unset($this->session->data['first_name']);
+						unset($this->session->data['last_name']);
+						unset($this->session->data['products']);
+						unset($this->session->data['htmlLuclyCyle']);
+					}
+				}
+			]]></add>
+		</operation>
+	</file>
+	
+	<file name="catalog/controller/checkout/success.php" error="log">
+		<operation error="log">
+			<search position="replace" error="log" index="1"><![CDATA[if (isset($this->session->data['order_id'])) {]]></search>
+			<add><![CDATA[
+				require_once(DIR_SYSTEM . '/luckysdk/lucky.php');
+                $API_ID = $this->config->get('sdksnippet_text_field');
+                $OPERATION_ID = $this->config->get('sdksnippet_operation_id');
+                $useBanner = $this->config->get('sdksnippet_use_mode');
+                $beforeInformation = $this->config->get('sdksnippet_other_information');
+                $afterInformation = $this->config->get('sdksnippet_after_information');
+				if ($API_ID && $OPERATION_ID && isset($this->session->data['order_id'])) {
+                    $banner_default = $this->config->get('config_banner');
+                    $iframe_width   = $this->config->get('sdksnippet_iframe_width');
+                    $iframe_height = $this->config->get('sdksnippet_iframe_height');
+					$this->load->model('checkout/order');
+					$LuckyCycle_PaymentMethod = unserialize($this->config->get('sdksnippet_sdkextension'));
+					$order_info = $this->model_checkout_order->getOrder($this->session->data['order_id']);
+					//$this->log->write(var_dump($order_info));
+					$currencyCode = $order_info['currency_code'];
+					$languageCode = $order_info['language_code'];
+					if (is_array($LuckyCycle_PaymentMethod) && in_array($order_info['payment_code'], $LuckyCycle_PaymentMethod)) {
+						$this->load->model('catalog/category');
+						$this->load->model('catalog/product');
+						$this->load->model('luckycycle/sdksnippet');
+
+						$this->session->data['customer_order_id'] = $this->session->data['order_id'];
+						$this->session->data['final_total'] = $this->cart->getTotal();
+						//$this->session->data['final_total'] = $order_info['total'];
+					
+						if ($order_info['customer_id']==0) {
+							$this->session->data['user_uid'] = 'guest_'. md5($this->session->data['order_id']);
+						} else {
+							$this->session->data['user_uid'] = $order_info['customer_id'];
+						}
+					
+						$this->session->data['email'] = $order_info['email'];
+						$this->session->data['first_name'] = $order_info['firstname'];
+						$this->session->data['last_name'] = $order_info['lastname'];
+						$this->session->data['products'] = array();
+
+						foreach ($this->cart->getProducts() as $product) {
+							$price = $product['price'];
+							
+							$data['catprod'] = array();
+							$product_category = $this->model_catalog_product->getCategories($product['product_id']);
+							foreach ($product_category as $prodcat) {
+								$category_info = $this->model_catalog_category->getCategory($prodcat['category_id']);
+								if ($category_info) {
+									if ($category_info['parent_id']==0) {
+										$data['catprod'][] = array(
+											'id' => $category_info['category_id']
+										);
+									}
+								}
+							}
+	
+							$product_info = $this->model_catalog_product->getProduct($product['product_id']);
+							if (!empty($product_info['manufacturer'])) {
+								$manufacturer_id = $product_info['manufacturer_id'];
+							} else {
+								$manufacturer_id = "";
+							}
+							$tag1_id = 'false';
+							if (isset($product_info['tag'])) {
+                                $tag_values = strtolower($product_info['tag']);
+                                $pos = strpos($tag_values, 'luckycycle');
+                                if ($pos !== false) {
+                                    $tag1_id = 'true';
+                                }
+                            }
+													
+							$this->session->data['products'][] = array(
+								'price'     => $price,
+								'quantity'  => $product['quantity'],
+								'product_id' => $product['product_id'],
+								'manufacturer_id' => $manufacturer_id,
+								'category_id' => count($data['catprod'])?$data['catprod'][0]['id']:'',
+								'reference' => 'reference',
+								'luckycycle' => $tag1_id
+							);
+						}
+
+						//config sdk
+                        $req = new LuckyCycleApi('https://www.luckycycle.com');
+                        $req->setApiKey($API_ID);
+                        $req->setOperationId($OPERATION_ID);
+                        $pokedata = array(
+                            'user_uid' => (string)$this->session->data['user_uid'],
+                            'item_uid' => (string)$this->session->data['customer_order_id'],
+                            'item_value' => (string)$this->session->data['final_total'],
+                            'item_currency' => (string)$currencyCode,
+                            'language' => (string)$languageCode,
+                            'firstname' => (string)$this->session->data['first_name'],
+                            'lastname' => (string)$this->session->data['last_name'],
+                            'email' => (string)$this->session->data['email'],
+                            'cart'=> $this->session->data['products']
+                        );
+                        //end sdk
+                        $this->session->data['htmlLuclyCyle'] = '';
+                        //$this->log->write(var_dump($pokedata));
+                        try {
+                            $poke = $req->poke($pokedata);
+                            //$this->log->write(var_dump($poke));
+                            if ($poke && $poke['can_play']== true) {
+                                $countHash = $this->model_luckycycle_sdksnippet->countHash($poke['computed_hash']);
+                                if ($countHash == 0) {
+                                    $dataSdksnippet = array();
+                                    $dataSdksnippet['hash'] = $poke['computed_hash'];
+                                    $dataSdksnippet['banner_url'] = $poke['banner_url'];
+                                    $dataSdksnippet['id_order'] = $this->session->data['customer_order_id'];
+                                    $dataSdksnippet['operation_id'] = $OPERATION_ID;
+                                    $dataSdksnippet['type'] = 'basket';
+                                    $dataSdksnippet['id_customer'] = $this->session->data['user_uid'];
+                                    $dataSdksnippet['total_played'] = $order_info['total'];
+                                    $orderedId = $this->model_luckycycle_sdksnippet->addSdksnippet($dataSdksnippet);
+                                    $htmlLuclyCyle = '';
+                                    $this->load->model('tool/image');
+                                    if ($banner_default == null) {
+                                        $banner_default = 'no_image.jpg';
+                                    }
+                                    if (!$iframe_width) {
+                                        $iframe_width_resize = 100;
+                                    } else {
+                                        $iframe_width_resize = $iframe_width;
+                                    }
+                                    if (!$iframe_height) {
+                                        $iframe_height_resize = 100;
+                                    } else {
+                                        $iframe_height_resize = $iframe_height;
+                                    }
+                                    $imageUrl = $this->model_tool_image->resize($banner_default, $iframe_width_resize, $iframe_height_resize);
+                                    if (isset($beforeInformation)) {
+                                        $htmlLuclyCyle .= "<div>" .$beforeInformation. "</div>";
+                                    }
+                                    if (!$useBanner) {
+                                        $htmlLuclyCyle .='<div>
+                                                            <iframe frameborder="0"
+                                                                    src="http://www.luckycycle.com/play/'. $poke['computed_hash'] .'"
+                                                                    target="_blank"
+                                                                    align="center"
+                                                                    scrolling="no"
+                                                                    style="margin: auto; max-width: 98%;" ';
+                                                            if ($iframe_width) { $htmlLuclyCyle .= 'width="'. $iframe_width.'px" ' ;}
+                                                            if ($iframe_height) { $htmlLuclyCyle .= 'height="'. $iframe_height.'px" ' ;}
+                                                            $htmlLuclyCyle .='id="luckycycle_iframe"></iframe></div>';
+                                    } else {
+                                        if ($poke['banner_url'] == null) {
+                                            $htmlLuclyCyle .= '<a href="http://www.luckycycle.com/play/' . $poke['computed_hash'] . '" target="_blank" id="lc_banner_url">
+                                                <img src="'.$imageUrl.'"';
+                                                if ($iframe_width) { $htmlLuclyCyle .= 'width="'. $iframe_width.'px" ' ;}
+                                                if ($iframe_height) { $htmlLuclyCyle .= 'height="'. $iframe_height.'px" ' ;}
+                                                $htmlLuclyCyle .=' style="margin: auto; max-width: 98%;" /></a>';
+                                        } else {
+                                            $htmlLuclyCyle .= '<a href="http://www.luckycycle.com/play/'.$poke['computed_hash'] .'" target="_blank" id="lc_banner_url">
+                                                <img src="'.$poke['banner_url'] .'" ';
+                                                if ($iframe_width) { $htmlLuclyCyle .= 'width="'. $iframe_width.'px" ' ;}
+                                                if ($iframe_height) { $htmlLuclyCyle .= 'height="'. $iframe_height.'px" ' ;}
+                                                $htmlLuclyCyle .=' style="margin: auto; max-width: 98%;" /></a>';
+                                        }
+                                    }
+                                    if (isset($afterInformation)) {
+                                        $htmlLuclyCyle .= "<div>" .$afterInformation. "</div>";
+                                    }
+                                    $this->session->data['htmlLuclyCyle'] = $htmlLuclyCyle;
+                                } else {
+                                    $this->log->write('Poke added in Database');
+                                }
+                            } else {
+                                $this->log->write("we didn't get a poke back, user cannot play on this order or an error happened");
+                            }
+                        } catch (Exception $e) {
+                            $this->log->write($e->getMessage());
+                        }
+					} else {
+                        $this->log->write("payment method is not satisfactory conditions");
+                    }
+			]]></add>
+		</operation>
+	</file>
+	
+	<file name="catalog/view/theme/*/template/common/success.tpl" error="log">
+		<operation error="log">
+			<search taposition="before" error="log" index="1"><![CDATA[<div class="buttons">]]></search>
+			<add><![CDATA[
+				<?php
+				    $session = new Session();
+					if (isset($session->data['htmlLuclyCyle']))
+					$htmlLuckyCyle = $session->data['htmlLuclyCyle'];
+					if (isset($htmlLuckyCyle) && $htmlLuckyCyle != '') {
+					    echo "<div style='text-align: center'>". $htmlLuckyCyle . "</div>";
+					} else { echo ''; }
+				?>
+			]]></add>
+		</operation>
+	</file>
+</modification>
